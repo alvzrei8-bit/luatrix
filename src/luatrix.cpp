@@ -51,6 +51,7 @@ static const std::vector<Feature> FEATURES = {
     {"variable_renaming",  "Variable Renaming",    "Randomized local-symbol renaming",                       60, false},
     {"virtual_machine",    "Virtual Machine",      "Per-output randomized virtual opcode dispatcher",       70, true},
     {"antitamper",         "Anti Tamper",          "Runtime integrity checks for core functions",            80, false},
+    {"anti_debug",         "Anti Debug",            "Detects active debug hooks without requiring the debug library",  85, false},
     {"control_flow",       "Control Flow",         "Opaque state guard around the program",                 90, false},
     {"garbage_code",       "Garbage Code",         "Dead decoy locals and branches",                        100, false},
     {"compressor",         "Compressor",           "Comment removal and safe whitespace packing",            110, false},
@@ -380,6 +381,19 @@ static std::string anti_tamper(std::string source) {
         "end\n" + source;
 }
 
+static std::string anti_debug(std::string source) {
+    // Only reject an active debug hook. Missing or restricted debug APIs are
+    // normal in Luau and sandboxed Lua environments and are not failures.
+    return
+        "do "
+        "local __lt_debug=rawget(_G,\"debug\");"
+        "if type(__lt_debug)==\"table\" and type(__lt_debug.gethook)==\"function\" then "
+        "local __lt_ok,__lt_hook,__lt_mask,__lt_count=pcall(__lt_debug.gethook);"
+        "if __lt_ok and (__lt_hook~=nil or (__lt_mask and __lt_mask~=\"\") or (__lt_count and __lt_count>0)) then "
+        "error(\"Luatrix debugger detected\") end "
+        "end "
+        "end\n" + source;
+}
 static std::string inline_constant_functions(const std::string& source) {
     // Safe subset of the upstream inliner: local functions with no parameters and
     // a single literal return are replaced at call sites. Everything else is
@@ -536,7 +550,11 @@ static std::string detect_target(const std::string& source, const std::string& p
     if (std::regex_search(source, std::regex(R"(\b(AddCSLuaFile|include|hook\.Add|SERVER|CLIENT)\b)"))) glua += 3;
     if (glua > luau && glua >= 2) return "glua";
     if (luau > glua && luau >= 2) return "luau";
-    if (path.size() >= 5 && path.substr(path.size() - 5) == ".luau") return "luau";
+    std::string lower_path = path;
+    std::transform(lower_path.begin(), lower_path.end(), lower_path.begin(), [](unsigned char c) {
+        return static_cast<char>(std::tolower(c));
+    });
+    if (lower_path.size() >= 5 && lower_path.substr(lower_path.size() - 5) == ".luau") return "luau";
     return "lua";
 }
 
@@ -550,9 +568,9 @@ static std::string process(std::string source, const Options& options, const std
     // The full compatible pipeline is always active; VM and bytecode encoding
     // remain skipped for Luau/GLua just as they are in the upstream manifest.
     if (target == "luau" || target == "glua")
-        source = dynamic_code(source, "loadstring");
+        source = dynamic_code(source, "loadstring or load");
     else
-        source = dynamic_code(source, "load");
+        source = dynamic_code(source, "loadstring or load");
     source = opaque_predicates(source, seed);
     source = encode_strings(source, false);
     source = encode_strings(source, true);
@@ -560,6 +578,7 @@ static std::string process(std::string source, const Options& options, const std
     source = rename_variables(source, rng);
     if (target == "lua") source = virtual_machine_envelope(source, rng);
     source = anti_tamper(source);
+    source = anti_debug(source);
     source = control_flow(source, seed);
     source = garbage_code(source, 20, seed);
     source = compress(source);
