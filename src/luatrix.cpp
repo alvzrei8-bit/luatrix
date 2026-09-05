@@ -434,40 +434,92 @@ static std::string bytecode_envelope(const std::string& source) {
            "__lt_bytecode(" + escaped_payload(source) + ")()";
 }
 
+struct VirtualOpcode {
+    std::string token;
+    std::uint32_t id;
+};
+
 static std::string random_opcode(std::mt19937_64& rng,
-                                 std::unordered_set<std::string>& used) {
+                                  std::unordered_set<std::string>& used) {
     static const char alphabet[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    std::uniform_int_distribution<int> length(3, 8);
     std::uniform_int_distribution<int> pick(0, 25);
     std::string opcode;
     do {
         opcode.clear();
-        for (int i = 0; i < 3; ++i) opcode.push_back(alphabet[pick(rng)]);
+        for (int i = 0; i < length(rng); ++i) opcode.push_back(alphabet[pick(rng)]);
     } while (!used.insert(opcode).second);
     return opcode;
 }
 
+static std::uint32_t random_opcode_id(
+    std::mt19937_64& rng, std::unordered_set<std::uint32_t>& used) {
+    std::uniform_int_distribution<std::uint32_t> pick(1U, 0x7fffffffU);
+    std::uint32_t id = 0;
+    do {
+        id = pick(rng);
+    } while (!used.insert(id).second);
+    return id;
+}
+
 static std::string virtual_machine_envelope(const std::string& source,
                                             std::mt19937_64& rng) {
-    // The VM instruction vocabulary is intentionally re-keyed per output.
-    // A static "RET" opcode would make generated files easy to fingerprint.
-    std::unordered_set<std::string> used;
-    const std::string load_opcode = random_opcode(rng, used);
-    const std::string ret_opcode = random_opcode(rng, used);
-    const std::string noise_opcode = random_opcode(rng, used);
+    // Each output gets a fresh token vocabulary and a fresh numeric translation
+    // layer. The generated program never exposes stable LOAD/RET/NOP labels.
+    std::unordered_set<std::string> used_tokens;
+    std::unordered_set<std::uint32_t> used_ids;
+    auto make_opcode = [&]() {
+        return VirtualOpcode{random_opcode(rng, used_tokens),
+                             random_opcode_id(rng, used_ids)};
+    };
+
+    const VirtualOpcode load_opcode = make_opcode();
+    const VirtualOpcode ret_opcode = make_opcode();
+    std::uniform_int_distribution<int> noop_count(3, 7);
+    std::vector<VirtualOpcode> noop_opcodes;
+    for (int i = 0; i < noop_count(rng); ++i) noop_opcodes.push_back(make_opcode());
+
+    std::vector<std::string> program{load_opcode.token};
+    for (const auto& opcode : noop_opcodes) program.push_back(opcode.token);
+    std::shuffle(program.begin() + 1, program.end(), rng);
+    program.push_back(ret_opcode.token);
+
+    const std::string handlers_name = random_identifier(rng, 0);
+    const std::string decode_name = random_identifier(rng, 1);
+    const std::string program_name = random_identifier(rng, 2);
+    const std::string pc_name = random_identifier(rng, 3);
+    const std::string code_name = random_identifier(rng, 4);
+    const std::string return_id_name = random_identifier(rng, 5);
+    const std::string chunk_name = random_identifier(rng, 6);
+    const std::string payload = escaped_payload(source);
+
     std::ostringstream out;
-    out << "local __lt_vm={};local __lt_opcode={"
-        << "[\"" << load_opcode << "\"]=\"LOAD\","
-        << "[\"" << ret_opcode << "\"]=\"RET\","
-        << "[\"" << noise_opcode << "\"]=\"NOP\"};"
-        << "local __lt_program={\"" << load_opcode << "\",\""
-        << noise_opcode << "\",\"" << ret_opcode << "\"};"
-        << "local __lt_chunk;local __lt_pc=1;"
-        << "while __lt_pc<=#" << "__lt_program do "
-        << "local __lt_op=__lt_opcode[__lt_program[__lt_pc]];"
-        << "if __lt_op==\"LOAD\" then __lt_chunk=load("
-        << escaped_payload(source) << ");"
-        << "elseif __lt_op==\"RET\" then return __lt_chunk() end;"
-        << "__lt_pc=__lt_pc+1 end";
+    out << "local " << handlers_name << "={"
+        << "[" << load_opcode.id << " ]=function() " << chunk_name
+        << "=load(" << payload << ") end,"
+        << "[" << ret_opcode.id << " ]=function() return " << chunk_name
+        << "() end";
+    for (const auto& opcode : noop_opcodes) {
+        out << ",[" << opcode.id << "]=function() end";
+    }
+    out << "};local " << decode_name << "={"
+        << "[\"" << load_opcode.token << "\"]=" << load_opcode.id
+        << ",[\"" << ret_opcode.token << "\"]=" << ret_opcode.id;
+    for (const auto& opcode : noop_opcodes) {
+        out << ",[\"" << opcode.token << "\"]=" << opcode.id;
+    }
+    out << "};local " << program_name << "={";
+    for (std::size_t i = 0; i < program.size(); ++i) {
+        if (i) out << ",";
+        out << "\"" << program[i] << "\"";
+    }
+    out << "};local " << pc_name << "=1;local " << return_id_name << "="
+        << ret_opcode.id << ";while " << pc_name << "<=#" << program_name
+        << " do local " << code_name << "=" << decode_name << "[" << program_name
+        << "[" << pc_name << "]];if " << code_name << "==" << return_id_name
+        << " then return " << handlers_name << "[" << code_name << "]() end;"
+        << handlers_name << "[" << code_name << "]();" << pc_name << "="
+        << pc_name << "+1 end";
     return out.str();
 }
 
