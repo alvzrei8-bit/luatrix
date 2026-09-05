@@ -45,15 +45,14 @@ The lexer protects strings, comments, long-bracket strings, identifiers, and pun
 
 ## Randomized virtual opcodes
 
-The VM does not use a fixed opcode vocabulary. For every output it generates a new private mapping, for example:
+The VM does not use a fixed opcode vocabulary. For every output it generates a fresh virtual instruction vocabulary. Each token is translated through a new numeric ID table before reaching its handler, for example:
 
 ```
-ABC -> LOAD
-QXZ -> NOP
-MTR -> RET
+ABC -> 18492031 -> return handler
+XZX -> 771204006 -> no-op handler
 ```
 
-A later output receives different opcode names. The dispatcher resolves those names at runtime, making static signatures based on a permanent `RET` token ineffective. Explicit deterministic seeds are not exposed by the CLI, so normal runs always receive fresh mappings.
+A later output receives different token names, numeric IDs, local variable names, and several shuffled no-op instructions. The dispatcher has no stable `LOAD`, `RET`, or `NOP` labels, making static signatures based on a permanent opcode vocabulary ineffective. Explicit deterministic seeds are not exposed by the CLI, so normal runs always receive fresh mappings.
 
 ## License and attribution
 
